@@ -8,9 +8,49 @@ use crate::termwindow::{UIItem, UIItemType};
 use crate::utilsprites::RenderMetrics;
 use config::{Dimension, DimensionContext, TabBarColors, TabBarPosition};
 use std::rc::Rc;
+use termwiz::surface::SEQ_ZERO;
 use wezterm_font::LoadedFont;
 use wezterm_term::color::{ColorAttribute, ColorPalette};
+use wezterm_term::Line;
 use window::{IntegratedTitleButtonAlignment, IntegratedTitleButtonStyle};
+
+/// Separateur (caractere PUA) injecte par `format-tab-title` entre l'en-tete
+/// de groupe et le titre de la session. Sert a produire une ligne d'en-tete
+/// distincte au-dessus de l'onglet dans la barre verticale.
+const TAB_GROUP_SEP: char = '\u{E000}';
+
+fn split_group_title(line: &Line) -> Option<(Line, Line)> {
+    let mut sep_idx = None;
+    for i in 0..line.len() {
+        if let Some(cell) = line.get_cell(i) {
+            if cell.str().contains(TAB_GROUP_SEP) {
+                sep_idx = Some(i);
+                break;
+            }
+        }
+    }
+    let sep_idx = sep_idx?;
+
+    let mut header_cells = Vec::with_capacity(sep_idx);
+    for i in 0..sep_idx {
+        if let Some(c) = line.get_cell(i) {
+            header_cells.push(c.as_cell());
+        }
+    }
+    let mut body_cells = Vec::new();
+    let mut i = sep_idx + 1;
+    while i < line.len() {
+        if let Some(c) = line.get_cell(i) {
+            body_cells.push(c.as_cell());
+        }
+        i += 1;
+    }
+
+    Some((
+        Line::from_cells(header_cells, SEQ_ZERO),
+        Line::from_cells(body_cells, SEQ_ZERO),
+    ))
+}
 
 const X_BUTTON: &[Poly] = &[
     Poly {
@@ -304,8 +344,33 @@ impl crate::TermWindow {
                     // Skip window buttons in vertical mode
                 }
                 TabBarItem::Tab { tab_idx, active } => {
+                    // Si le titre contient le separateur de groupe, on emet une
+                    // ligne d'en-tete distincte au-dessus, puis l'onglet sans en-tete.
+                    let mut tab_entry_owned: Option<TabEntry> = None;
+                    let tab_item: &TabEntry =
+                        if let Some((header, body)) = split_group_title(&item.title) {
+                            let header_elem = Element::with_line(&font, &header, palette)
+                                .display(DisplayType::Block)
+                                .vertical_align(VerticalAlign::Top)
+                                .min_width(Some(Dimension::Pixels(tab_bar_width)))
+                                .max_width(Some(Dimension::Pixels(tab_bar_width)))
+                                .margin(BoxDimension {
+                                    left: Dimension::Cells(0.),
+                                    right: Dimension::Cells(0.),
+                                    top: Dimension::Cells(0.35),
+                                    bottom: Dimension::Cells(0.),
+                                });
+                            tab_eles.push(header_elem);
+                            let mut s = item.clone();
+                            s.title = body;
+                            tab_entry_owned = Some(s);
+                            tab_entry_owned.as_ref().unwrap()
+                        } else {
+                            item
+                        };
+
                     let mut elem = self.tab_item_to_element(
-                        item,
+                        tab_item,
                         &font,
                         &metrics,
                         palette,
