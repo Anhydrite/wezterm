@@ -224,6 +224,12 @@ local function attach_ottawa(window, pane)
   window:perform_action(wezterm.action.AttachDomain("ottawa-mux"), pane)
 end
 
+-- Domaines servis par le mux LOCAL (pas des hotes distants) : on les rattache
+-- au groupe local, et on ne les propose pas comme destination distante.
+local function is_local_mux_domain(name)
+  return name == "local" or name == "unix"
+end
+
 -- Ctrl+Shift+O : propose un hostname/domaine. A la selection :
 --  - domaine mux detache -> AttachDomain (restaure les panes distants
 --    existants DANS la fenetre courante, sans nouvelle fenetre)
@@ -232,7 +238,7 @@ local function open_remote(window, pane)
   local choices = {}
   for _, dom in ipairs(wezterm.mux.all_domains()) do
     local name = dom:name()
-    if name ~= "local" and dom:is_spawnable() then
+    if not is_local_mux_domain(name) and dom:is_spawnable() then
       local st = dom:state()
       local suffix = (st == "Detached") and "  (session distante)" or ""
       table.insert(choices, {
@@ -436,19 +442,31 @@ config.keys = {
 -- Nom de groupe = hostname de la machine (oslo pour local, ottawa pour distant)
 local LOCAL_HOST = wezterm.hostname()
 local DOMAIN_STYLE = {
-  ["local"] = { label = LOCAL_HOST, bg = "#0a1628", fg = "#c4b5fd" },
-  ottawa = { label = "ottawa", bg = "#2b2042", fg = "#a29bfe" },
-  ["ottawa-mux"] = { label = "ottawa", bg = "#2b2042", fg = "#a29bfe" },
+  ["local"] = { label = LOCAL_HOST, bg = "#0a1628", fg = "#c4b5fd", bg_active = "#1f3f6b", fg_active = "#ffffff" },
+  ottawa = { label = "ottawa", bg = "#2b2042", fg = "#a29bfe", bg_active = "#4b3a7a", fg_active = "#ffffff" },
+  ["ottawa-mux"] = { label = "ottawa", bg = "#2b2042", fg = "#a29bfe", bg_active = "#4b3a7a", fg_active = "#ffffff" },
 }
 
+-- Domaines servis par le mux LOCAL (pas des hotes distants) : on les rattache
+-- au groupe local pour ne pas creer un groupe « unix » a cote de « oslo ».
 local function domain_of(tab)
   local pane = tab.active_pane
-  return (pane and pane.domain_name) or "local"
+  local name = (pane and pane.domain_name) or "local"
+  if is_local_mux_domain(name) then
+    return "local"
+  end
+  return name
 end
 
 -- Separateur U+E000 (PUA) : la barre verticale patchee le transforme en
 -- ligne d'en-tete de groupe distincte au-dessus de l'onglet.
 local GROUP_SEP = "\238\128\128"
+
+-- Indentation des sessions sous leur en-tete de groupe. Le premier onglet du
+-- groupe porte l'en-tete : il doit lui aussi etre indente comme ses freres,
+-- sinon la premiere session apparait collee au bord gauche.
+local CHILD_INDENT = "      " -- 6 espaces
+local CHILD_BRANCH = "└ "
 
 wezterm.on("format-tab-title", function(tab, tabs, panes, cfg, hover, max_width)
   local domain = domain_of(tab)
@@ -476,32 +494,54 @@ wezterm.on("format-tab-title", function(tab, tabs, panes, cfg, hover, max_width)
   local is_folder = not seen[domain]
 
   local style = DOMAIN_STYLE[domain]
-    or { label = (domain:gsub("%-mux$", "")), bg = "#1e3a5f", fg = "#dfe6e9" }
+    or {
+      label = (domain:gsub("%-mux$", "")),
+      bg = "#1e3a5f",
+      fg = "#dfe6e9",
+      bg_active = "#2f5d8f",
+      fg_active = "#ffffff",
+    }
 
   local title = tab.active_pane and tab.active_pane.title or "wezterm"
 
+  local active = tab.is_active == true
+  local child_fg = active and (style.fg_active or style.fg) or style.fg
+  local child_bg = active and (style.bg_active or style.bg) or style.bg
+  local child_mark = active and "▸ " or CHILD_BRANCH
+
   if is_folder then
-    -- En-tete de groupe sur sa propre ligne (via GROUP_SEP) puis titre en dessous.
-    return {
+    -- En-tete de groupe sur sa propre ligne (via GROUP_SEP) puis titre en dessous,
+    -- indente comme les autres sessions du groupe (et surligne s'il est actif).
+    local header = {
       { Background = { Color = style.bg } },
       { Foreground = { Color = style.fg } },
       { Attribute = { Intensity = "Bold" } },
-      { Text = "▾ " .. style.label },
+      { Text = "\226\150\190 " .. style.label },
       { Attribute = { Intensity = "Normal" } },
-      { Text = GROUP_SEP .. title },
+      { Background = { Color = child_bg } },
+      { Foreground = { Color = child_fg } },
     }
+    if active then
+      table.insert(header, { Attribute = { Intensity = "Bold" } })
+    end
+    table.insert(header, { Text = GROUP_SEP .. CHILD_INDENT .. child_mark .. title })
+    return header
   else
     -- Ligne "enfant" indentee ; rappel du domaine s'il reapparait apres un autre groupe
     local rejoined = (prev ~= nil) and (prev ~= domain)
-    local prefix = "   └ "
+    local prefix = CHILD_INDENT .. child_mark
     if rejoined then
-      prefix = "   ↳ [" .. style.label .. "] "
+      prefix = CHILD_INDENT .. "\226\134\179 [" .. style.label .. "] "
     end
-    return {
-      { Background = { Color = style.bg } },
-      { Foreground = { Color = style.fg } },
-      { Text = prefix .. title },
+    local parts = {
+      { Background = { Color = child_bg } },
+      { Foreground = { Color = child_fg } },
     }
+    if active then
+      table.insert(parts, { Attribute = { Intensity = "Bold" } })
+    end
+    table.insert(parts, { Text = prefix .. title })
+    return parts
   end
 end)
 
