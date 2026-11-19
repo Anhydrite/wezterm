@@ -204,7 +204,7 @@ config.keys = {
 
 -- === Étape C : groupement visuel local vs distant ===
 local DOMAIN_STYLE = {
-  local = { label = "LOCAL", bg = "#0a1628", fg = "#c4b5fd" },
+  ["local"] = { label = "LOCAL", bg = "#0a1628", fg = "#c4b5fd" },
   ottawa = { label = "OTTAWA", bg = "#2b2042", fg = "#a29bfe" },
 }
 
